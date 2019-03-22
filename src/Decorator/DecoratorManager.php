@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 namespace src\Decorator;
 
@@ -6,60 +7,76 @@ use DateTime;
 use Exception;
 use Psr\Cache\CacheItemPoolInterface;
 use Psr\Log\LoggerInterface;
-use src\Integration\DataProvider;
+use src\ExtRestInterface;
 
-class DecoratorManager extends DataProvider
+/**
+ * @package src\Decorator
+ */
+final class DecoratorManager implements ExtRestInterface
 {
-    public $cache;
-    public $logger;
+    /** @var \src\ExtRestInterface */
+    private $dataProvider;
+
+    /** @var \Psr\Cache\CacheItemPoolInterface */
+    private $cache;
+
+    /** @var \Psr\Log\LoggerInterface */
+    private $logger;
 
     /**
-     * @param string $host
-     * @param string $user
-     * @param string $password
-     * @param CacheItemPoolInterface $cache
+     * @param \src\ExtRestInterface             $dataProvider
+     * @param \Psr\Cache\CacheItemPoolInterface $cache
+     * @param \Psr\Log\LoggerInterface          $logger
      */
-    public function __construct($host, $user, $password, CacheItemPoolInterface $cache)
+    public function __construct(ExtRestInterface $dataProvider, CacheItemPoolInterface $cache, LoggerInterface $logger)
     {
-        parent::__construct($host, $user, $password);
+        $this->dataProvider = $dataProvider;
         $this->cache = $cache;
-    }
-
-    public function setLogger(LoggerInterface $logger)
-    {
         $this->logger = $logger;
     }
 
     /**
      * {@inheritdoc}
      */
-    public function getResponse(array $input)
+    public function getResponse(array $request): array
     {
-        try {
-            $cacheKey = $this->getCacheKey($input);
-            $cacheItem = $this->cache->getItem($cacheKey);
-            if ($cacheItem->isHit()) {
-                return $cacheItem->get();
-            }
+        $cacheKey = $this->getCacheKey($request);
 
-            $result = parent::get($input);
+        // CacheItemPoolInterface::getItem() может выкинуть CacheItemInterface если передать неправильный ключик,
+        // но getCacheKey() всегда возвращяет корректную не пустую строку, поэтому можно не ловить этот exception
+        /** @noinspection PhpUnhandledExceptionInspection */
+        $cacheItem = $this->cache->getItem($cacheKey);
 
-            $cacheItem
-                ->set($result)
-                ->expiresAt(
-                    (new DateTime())->modify('+1 day')
-                );
-
-            return $result;
-        } catch (Exception $e) {
-            $this->logger->critical('Error');
+        if ($cacheItem->isHit()) {
+            return (array)$cacheItem->get();
         }
 
-        return [];
+        try {
+            $result = $this->dataProvider->getResponse($request);
+        } catch (Exception $e) {
+            $this->logger->critical($e->getMessage());
+            throw $e;
+        }
+
+        $cacheItem
+            ->set($result)
+            ->expiresAt(
+                (new DateTime())->modify('+1 day')
+            );
+
+        if (!$this->cache->save($cacheItem)) {
+            $this->logger->warning('Could not cache response');
+        }
+
+        return $result;
     }
 
-    public function getCacheKey(array $input)
+    /**
+     * @param array $input
+     * @return string
+     */
+    public function getCacheKey(array $input): string
     {
-        return json_encode($input);
+        return md5((string)json_encode($input, JSON_UNESCAPED_UNICODE));
     }
 }

@@ -300,6 +300,7 @@ return [
     //       to `exclude_analysis_directory_list`.
     'exclude_analysis_directory_list' => [
         'vendor/',
+        'tests/',
     ],
 
     // Enable this to enable checks of require/include statements referring to valid paths.
